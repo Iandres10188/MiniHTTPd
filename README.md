@@ -107,7 +107,3 @@ lecturas parciales y reutilizar el socket en peticiones sucesivas (keep-alive).
   el keep-alive secuencial (el caso real de los navegadores).
 - Las escrituras usan reintento sobre `EAGAIN` en lugar de registrar
   `EPOLLOUT`; suficiente para contenido pequeno/mediano.
-
-## Licencia
-
-Proyecto academico. Uso libre con fines educativos.
