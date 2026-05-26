@@ -1,8 +1,7 @@
 #include "mime.h"
 #include <string.h>
-#include <strings.h>  /* strcasecmp */
+#include <strings.h>  
 
-/* Tabla extension -> tipo MIME */
 static const struct {
     const char *ext;
     const char *type;
@@ -23,7 +22,6 @@ static const struct {
 
 const char *mime_lookup(const char *path)
 {
-    /* Buscamos el ultimo '.' del nombre para obtener la extension. */
     const char *dot = strrchr(path, '.');
     if (dot) {
         size_t n = sizeof(mime_table) / sizeof(mime_table[0]);
@@ -32,6 +30,6 @@ const char *mime_lookup(const char *path)
                 return mime_table[i].type;
         }
     }
-    /* Tipo generico para binarios desconocidos. */
+    
     return "application/octet-stream";
 }

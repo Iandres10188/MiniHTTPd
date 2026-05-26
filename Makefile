@@ -1,29 +1,29 @@
-CC      := gcc
-CFLAGS  := -std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude
-# Endurecimiento y generación automática de dependencias (-MMD -MP)
-CFLAGS  += -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -MMD -MP
-LDFLAGS := -pie
+CC = gcc
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE
+LDFLAGS = -fPIE -pie
 
-SRC     := $(wildcard src/*.c)
-OBJ     := $(SRC:.c=.o)
-DEPS    := $(SRC:.c=.d)
-BIN     := minihttpd
+SRC_DIR = src
+OBJ_DIR = src
+BIN = minihttpd
+
+SRCS = $(wildcard $(SRC_DIR)/*.c)
+OBJS = $(SRCS:.c=.o)
+DEPS = $(SRCS:.c=.d)
+
+-include $(DEPS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(BIN): $(OBJS)
+	$(CC) $(OBJS) $(LDFLAGS) -o $(BIN)
 
 .PHONY: all clean run
 
 all: $(BIN)
 
-$(BIN): $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS)
-
-src/%.o: src/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
 run: $(BIN)
-	./$(BIN) 8080
+	./$(BIN)
 
 clean:
-	rm -f $(OBJ) $(BIN) $(DEPS)
-
-# Incluye las dependencias autogeneradas (los archivos .d) si existen
--include $(DEPS)
+	rm -f $(SRC_DIR)/*.o $(SRC_DIR)/*.d $(BIN)

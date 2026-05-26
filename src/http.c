@@ -11,13 +11,13 @@
 #include <unistd.h>
 #include <errno.h>
 
-/* ------------------------------------------------------------------ */
-/* Utilidades de envio                                                */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* UTILIDADES DE ENVÍO                                                */
+/* ================================================================== */
 
-/*
- * Envia 'len' bytes de forma confiable sobre un socket no bloqueante.
- * Reintenta ante EAGAIN/EINTR. Devuelve 0 en exito, -1 si el peer cerro.
+/**
+ * Envía datos de forma confiable sobre un socket no bloqueante.
+ * Retorna: 0 en éxito, -1 si la conexión se rompe.
  */
 static int send_all(int fd, const char *data, size_t len)
 {
@@ -27,15 +27,14 @@ static int send_all(int fd, const char *data, size_t len)
         if (n > 0) {
             sent += (size_t)n;
         } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-            continue; /* socket lleno momentaneamente: reintentar */
+            continue; /* Socket lleno momentáneamente o interrupción: reintentar */
         } else {
-            return -1; /* conexion rota */
+            return -1; 
         }
     }
     return 0;
 }
 
-/* Texto asociado a cada codigo de estado. */
 static const char *status_text(int status)
 {
     switch (status) {
@@ -49,9 +48,9 @@ static const char *status_text(int status)
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Respuestas de error                                                */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* RESPUESTAS DE ERROR                                                */
+/* ================================================================== */
 
 int http_send_error(int fd, int status, int keep_alive)
 {
@@ -65,7 +64,7 @@ int http_send_error(int fd, int status, int keep_alive)
         "<body><h1>%d %s</h1><hr><p>MiniHTTPd</p></body></html>\n",
         status, txt, status, txt);
 
-    /* El 405 exige el encabezado Allow segun RFC 7231. */
+    /* El estado 405 exige el encabezado 'Allow' según RFC 7231 */
     const char *allow = (status == 405) ? "Allow: GET\r\n" : "";
 
     int hdr_len = snprintf(header, sizeof(header),
@@ -84,18 +83,18 @@ int http_send_error(int fd, int status, int keep_alive)
     return keep_alive;
 }
 
-/* ------------------------------------------------------------------ */
-/* Parsing                                                            */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* PARSING DE LA SOLICITUD                                            */
+/* ================================================================== */
 
 parse_result_t http_parse(const char *buf, size_t len, http_request_t *req)
 {
-    /* La solicitud termina (cabeceras) en la secuencia "\r\n\r\n". */
+    /* Una solicitud HTTP válida (cabeceras) finaliza estrictamente en "\r\n\r\n" */
     const char *end = memmem(buf, len, "\r\n\r\n", 4);
     if (!end)
-        return PARSE_INCOMPLETE; /* todavia no llegaron todas las cabeceras */
+        return PARSE_INCOMPLETE; 
 
-    /* --- Linea de solicitud: METHOD SP URI SP VERSION --- */
+    /* --- Análisis de la Línea de Solicitud --- */
     const char *line_end = memmem(buf, len, "\r\n", 2);
     size_t line_len = (size_t)(line_end - buf);
     if (line_len == 0 || line_len >= 4096)
@@ -106,30 +105,26 @@ parse_result_t http_parse(const char *buf, size_t len, http_request_t *req)
     line[line_len] = '\0';
 
     char method[16], uri[MAX_URI], version[16];
-    /* sscanf con anchos de campo acotados: evita desbordamientos. */
     if (sscanf(line, "%15s %2047s %15s", method, uri, version) != 3)
         return PARSE_BAD_REQUEST;
 
-    /* Solo aceptamos HTTP/1.0 y HTTP/1.1. */
     if (strcmp(version, "HTTP/1.1") != 0 && strcmp(version, "HTTP/1.0") != 0)
         return PARSE_BAD_REQUEST;
 
-    /* Solo el metodo GET esta implementado -> el resto es 405. */
     if (strcmp(method, "GET") != 0)
         return PARSE_NOT_IMPLEMENTED;
 
-    /* Descartamos el query string (?a=b) para servir el archivo. */
+    /* Remoción del query string para localizar el recurso en disco */
     char *q = strchr(uri, '?');
     if (q) *q = '\0';
 
-    /* El URI debe ser absoluto (empezar con '/'). */
     if (uri[0] != '/')
         return PARSE_BAD_REQUEST;
 
-    /* keep-alive por defecto en 1.1; en 1.0 solo si lo piden. */
+    /* Gestion persistente por defecto: activa en HTTP/1.1, pasiva en HTTP/1.0 */
     req->keep_alive = (strcmp(version, "HTTP/1.1") == 0) ? 1 : 0;
 
-    /* --- Analisis de encabezados basicos (Connection, Host, User-Agent) --- */
+    /* --- Análisis de Encabezados (Connection) --- */
     const char *h = line_end + 2;
     while (h < end) {
         const char *nl = memmem(h, (size_t)(end - h), "\r\n", 2);
@@ -142,24 +137,20 @@ parse_result_t http_parse(const char *buf, size_t len, http_request_t *req)
             else if (strncasecmp(v, "keep-alive", 10) == 0)
                 req->keep_alive = 1;
         }
-        /* Host: y User-Agent: se reconocen; aqui no alteran la logica
-         * pero podrian registrarse o usarse para hosts virtuales. */
 
         if (!nl) break;
         h = nl + 2;
     }
 
-    /* Copias acotadas a la estructura de salida (no strcpy). */
     snprintf(req->method,  sizeof(req->method),  "%s", method);
     snprintf(req->uri,     sizeof(req->uri),     "%s", uri);
     snprintf(req->version, sizeof(req->version), "%s", version);
 
     return PARSE_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/* Atencion de la solicitud                                           */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* ATENCIÓN DE LA SOLICITUD                                           */
+/* ================================================================== */
 
 int http_handle(int fd, const http_request_t *req)
 {
@@ -177,7 +168,6 @@ int http_handle(int fd, const http_request_t *req)
         case FILE_OK:        break;
     }
 
-    /* Cabecera 200 OK con Content-Type y Content-Length correctos. */
     char header[1024];
     int hdr_len = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\n"
@@ -194,7 +184,7 @@ int http_handle(int fd, const http_request_t *req)
         return 0;
     }
 
-    /* Cuerpo: leemos del archivo en bloques y reenviamos. */
+    /* Transmisión del cuerpo del archivo por bloques (Chunks) */
     char chunk[READ_CHUNK];
     ssize_t n;
     while ((n = read(file_fd, chunk, sizeof(chunk))) > 0) {
@@ -205,6 +195,6 @@ int http_handle(int fd, const http_request_t *req)
     }
     close(file_fd);
 
-    if (n < 0) return 0; /* error de lectura a mitad de respuesta */
+    if (n < 0) return 0; 
     return req->keep_alive;
 }

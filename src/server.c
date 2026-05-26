@@ -25,7 +25,7 @@ int server_listen(int port)
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); return -1; }
 
-    /* Permite reusar el puerto inmediatamente tras reiniciar. */
+    /* Evita el error 'Address already in use' al reiniciar el servidor rápidamente */
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -53,7 +53,6 @@ int server_listen(int port)
     return fd;
 }
 
-/* Cierra y libera la conexion asociada a un evento. */
 static void close_conn(int epfd, connection_t *c)
 {
     epoll_ctl(epfd, EPOLL_CTL_DEL, c->fd, NULL);
@@ -61,7 +60,10 @@ static void close_conn(int epfd, connection_t *c)
     free(c);
 }
 
-/* Acepta todas las conexiones pendientes (modo nivel/edge seguro). */
+/**
+ * Vacía el backlog de conexiones pendientes en el socket pasivo.
+ * I/O No bloqueante: itera hasta que accept() retorne EAGAIN/EWOULDBLOCK.
+ */
 static void accept_connections(int epfd, int listen_fd)
 {
     for (;;) {
@@ -70,12 +72,13 @@ static void accept_connections(int epfd, int listen_fd)
         int cfd = accept(listen_fd, (struct sockaddr *)&cli, &len);
         if (cfd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
-                break; /* ya no hay mas conexiones pendientes */
+                break; 
             if (errno == EINTR)
                 continue;
             perror("accept");
             break;
         }
+        
         if (set_nonblocking(cfd) < 0) { close(cfd); continue; }
 
         connection_t *c = calloc(1, sizeof(connection_t));
@@ -83,7 +86,7 @@ static void accept_connections(int epfd, int listen_fd)
         c->fd = cfd;
 
         struct epoll_event ev;
-        ev.events   = EPOLLIN;       /* nivel-disparado por simplicidad */
+        ev.events   = EPOLLIN; /* Level-Triggered (LT) */
         ev.data.ptr = c;
         if (epoll_ctl(epfd, EPOLL_CTL_ADD, cfd, &ev) < 0) {
             perror("epoll_ctl add");
@@ -93,43 +96,42 @@ static void accept_connections(int epfd, int listen_fd)
     }
 }
 
-/* Procesa datos legibles de un cliente. */
+/**
+ * Acumula y procesa las ráfagas de bytes que llegan desde un cliente.
+ */
 static void handle_client(int epfd, connection_t *c)
 {
-    /* Leemos lo que haya disponible y lo acumulamos en el buffer. */
     for (;;) {
         if (c->buf_len >= MAX_REQUEST) {
-            /* Solicitud demasiado grande -> 400 y cerrar. */
             http_send_error(c->fd, 400, 0);
             close_conn(epfd, c);
             return;
         }
-        ssize_t n = read(c->fd, c->buf + c->buf_len,
-                         MAX_REQUEST - c->buf_len);
+        
+        ssize_t n = read(c->fd, c->buf + c->buf_len, MAX_REQUEST - c->buf_len);
         if (n > 0) {
             c->buf_len += (size_t)n;
             continue;
         }
-        if (n == 0) {            /* el cliente cerro la conexion */
+        if (n == 0) { /* EOF: El cliente cerró la conexión ordenadamente */
             close_conn(epfd, c);
             return;
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK)
-            break;               /* no hay mas datos por ahora    */
+            break; /* El buffer del sistema operativo se quedó sin bytes por ahora */
         if (errno == EINTR)
             continue;
-        close_conn(epfd, c);     /* error real                    */
+        close_conn(epfd, c); 
         return;
     }
 
-    /* Intentamos parsear lo acumulado. */
     http_request_t req;
     parse_result_t pr = http_parse(c->buf, c->buf_len, &req);
 
     int keep;
     switch (pr) {
         case PARSE_INCOMPLETE:
-            return; /* esperamos mas bytes en el siguiente evento */
+            return; /* Retorna al bucle epoll a esperar más fragmentos */
         case PARSE_BAD_REQUEST:
             keep = http_send_error(c->fd, 400, 0);
             break;
@@ -143,8 +145,7 @@ static void handle_client(int epfd, connection_t *c)
     }
 
     if (keep) {
-        /* Conexion persistente: reiniciamos el buffer para la siguiente. */
-        c->buf_len = 0;
+        c->buf_len = 0; /* Recicla el contexto para la siguiente solicitud HTTP (Keep-Alive) */
     } else {
         close_conn(epfd, c);
     }
@@ -157,7 +158,7 @@ int server_run(int listen_fd)
 
     struct epoll_event ev;
     ev.events  = EPOLLIN;
-    ev.data.ptr = NULL;          /* NULL identifica al socket de escucha */
+    ev.data.ptr = NULL; /* Convención interna: NULL mapea al socket de escucha */
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, listen_fd, &ev) < 0) {
         perror("epoll_ctl listen");
         close(epfd);
@@ -174,12 +175,14 @@ int server_run(int listen_fd)
             perror("epoll_wait");
             break;
         }
+        
         for (int i = 0; i < n; i++) {
             if (events[i].data.ptr == NULL) {
-                /* Evento en el socket de escucha: nuevas conexiones. */
+                /* Evento en el socket pasivo: procesar nuevas conexiones */
                 accept_connections(epfd, listen_fd);
             } else {
                 connection_t *c = (connection_t *)events[i].data.ptr;
+                
                 if (events[i].events & (EPOLLHUP | EPOLLERR)) {
                     close_conn(epfd, c);
                 } else if (events[i].events & EPOLLIN) {
