@@ -1,0 +1,12 @@
+# Binarios y objetos
+minihttpd
+*.o
+*.out
+
+# Editores
+.vscode/
+*.swp
+*~
+
+# Sistema
+.DS_Store
